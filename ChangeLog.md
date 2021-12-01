@@ -27,6 +27,10 @@ See docs/process.md for more on how version tagging works.
 - The `--bind` flag used to enable embind has been deprecated in favor of
   `-lembind`.  The semantics have not changed and the old flag continues to
   work. (#16087)
+- Remove support for deprecated `EMMAKEN_COMPILER`, `EMMAKEN_CFLAGS`, and
+  `EMMAKEN_NO_SDK`.
+  environment variabls.  The former is replaced by setting `LLVM_ROOT` in the
+  config file.  The latter is replaced by `EMCC_CFLAGS`.
 
 3.1.2 - 20/01/2022
 ------------------
