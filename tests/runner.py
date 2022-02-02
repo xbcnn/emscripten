@@ -60,7 +60,8 @@ core_test_modes = [
   'wasm2js3',
   'wasm2jss',
   'wasm2jsz',
-  'wasm64'
+  'wasm64',
+  'lto2',
 ]
 
 # The default core test mode, used when none is specified
