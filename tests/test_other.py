@@ -7960,6 +7960,42 @@ end
     create_file(externs, '')
     self.run_process([EMCC, test, '--closure=1', '--closure-args', '--externs "' + externs + '"'])
 
+  def test_closure_type_annotations(self):
+    # Verify that certain type annotations exist to allow closure to avoid
+    # ambiguity and maximise optimiztion opporutnities in user code.
+
+    # Verify that unused getContext methods can be DCE'd
+    create_file('pre.js', '''
+      /** @constructor */
+      function Foo() {
+        this.bar = function() {
+          console.error("my bar");
+        };
+        this.baz = function() {
+          console.error("my baz");
+        };
+        this.getContext = function() {
+          console.error("my getContext");
+        };
+        return this;
+      }
+      function getObj() {
+        return Foo();
+      }
+      var obj = getObj();
+      obj.bar();
+    ''')
+    self.build(test_file('hello_world.c'), emcc_args=['--closure=1', '-sINCLUDE_FULL_LIBRARY', '--pre-js=pre.js'])
+    code = read_file('hello_world.js')
+    # `bar` method is used to should not be DCE'd
+    self.assertContained('my bar', code)
+    # `baz` method is not used
+    self.assertNotContained('my baz', code)
+    # `getContext` is also not used, but also happens to conflict with usage
+    # withing our JS libraries.  Check that we have enought type annotations that
+    # it can still be DCE'd.
+    self.assertNotContained('my getContext', code)
+
   @with_env_modify({'EMPROFILE': '1'})
   def test_toolchain_profiler(self):
     # Verify some basic functionality of EMPROFILE

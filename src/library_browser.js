@@ -13,7 +13,8 @@ var LibraryBrowser = {
     'emscripten_set_main_loop_timing',
 #if !MINIMAL_RUNTIME
     '$runtimeKeepalivePush',
-    '$runtimeKeepalivePop'
+    '$runtimeKeepalivePop',
+    '$Browser_createContext',
 #endif
   ],
   $Browser__postset: 'Module["requestFullscreen"] = function Module_requestFullscreen(lockPointer, resizeCanvas) { Browser.requestFullscreen(lockPointer, resizeCanvas) };\n' + // exports
@@ -26,6 +27,7 @@ var LibraryBrowser = {
                      'Module["resumeMainLoop"] = function Module_resumeMainLoop() { Browser.mainLoop.resume() };\n' +
                      'Module["getUserMedia"] = function Module_getUserMedia() { Browser.getUserMedia() }\n' +
                      'Module["createContext"] = function Module_createContext(canvas, useWebGL, setInModule, webGLContextAttributes) { return Browser.createContext(canvas, useWebGL, setInModule, webGLContextAttributes) }',
+
   $Browser: {
     mainLoop: {
       running: false,
@@ -152,6 +154,7 @@ var LibraryBrowser = {
         var img = new Image();
         img.onload = () => {
           assert(img.complete, 'Image ' + name + ' could not be decoded');
+          /** @type {HTMLCanvasElement} */
           var canvas = document.createElement('canvas');
           canvas.width = img.width;
           canvas.height = img.height;
@@ -328,57 +331,7 @@ var LibraryBrowser = {
     },
 
     createContext: function(canvas, useWebGL, setInModule, webGLContextAttributes) {
-      if (useWebGL && Module.ctx && canvas == Module.canvas) return Module.ctx; // no need to recreate GL context if it's already been created for this canvas.
-
-      var ctx;
-      var contextHandle;
-      if (useWebGL) {
-        // For GLES2/desktop GL compatibility, adjust a few defaults to be different to WebGL defaults, so that they align better with the desktop defaults.
-        var contextAttributes = {
-          antialias: false,
-          alpha: false,
-#if MIN_WEBGL_VERSION >= 2
-          majorVersion: 2,
-#else
-#if MAX_WEBGL_VERSION >= 2 // library_browser.js defaults: use the WebGL version chosen at compile time (unless overridden below)
-          majorVersion: (typeof WebGL2RenderingContext !== 'undefined') ? 2 : 1,
-#else
-          majorVersion: 1,
-#endif
-#endif
-        };
-
-        if (webGLContextAttributes) {
-          for (var attribute in webGLContextAttributes) {
-            contextAttributes[attribute] = webGLContextAttributes[attribute];
-          }
-        }
-
-        // This check of existence of GL is here to satisfy Closure compiler, which yells if variable GL is referenced below but GL object is not
-        // actually compiled in because application is not doing any GL operations. TODO: Ideally if GL is not being used, this function
-        // Browser.createContext() should not even be emitted.
-        if (typeof GL !== 'undefined') {
-          contextHandle = GL.createContext(canvas, contextAttributes);
-          if (contextHandle) {
-            ctx = GL.getContext(contextHandle).GLctx;
-          }
-        }
-      } else {
-        ctx = canvas.getContext('2d');
-      }
-
-      if (!ctx) return null;
-
-      if (setInModule) {
-        if (!useWebGL) assert(typeof GLctx === 'undefined', 'cannot set in module if GLctx is used, but we are a non-GL context that would replace it');
-
-        Module.ctx = ctx;
-        if (useWebGL) GL.makeContextCurrent(contextHandle);
-        Module.useWebGL = useWebGL;
-        Browser.moduleContextCreatedCallbacks.forEach(function(callback) { callback() });
-        Browser.init();
-      }
-      return ctx;
+      Browser_createContext(canvas, useWebGL, setInModule, webGLContextAttributes);
     },
 
     destroyContext: function(canvas, useWebGL, setInModule) {},
@@ -773,6 +726,61 @@ var LibraryBrowser = {
         }
       }
     },
+  },
+
+  $Browser_createContext__docs: '/** @param {HTMLCanvasElement} canvas */',
+  $Browser_createContext: function(canvas, useWebGL, setInModule, webGLContextAttributes) {
+    if (useWebGL && Module.ctx && canvas == Module.canvas) return Module.ctx; // no need to recreate GL context if it's already been created for this canvas.
+
+    var ctx;
+    var contextHandle;
+    if (useWebGL) {
+      // For GLES2/desktop GL compatibility, adjust a few defaults to be different to WebGL defaults, so that they align better with the desktop defaults.
+      var contextAttributes = {
+        antialias: false,
+        alpha: false,
+#if MIN_WEBGL_VERSION >= 2
+        majorVersion: 2,
+#else
+#if MAX_WEBGL_VERSION >= 2 // library_browser.js defaults: use the WebGL version chosen at compile time (unless overridden below)
+        majorVersion: (typeof WebGL2RenderingContext !== 'undefined') ? 2 : 1,
+#else
+        majorVersion: 1,
+#endif
+#endif
+      };
+
+      if (webGLContextAttributes) {
+        for (var attribute in webGLContextAttributes) {
+          contextAttributes[attribute] = webGLContextAttributes[attribute];
+        }
+      }
+
+      // This check of existence of GL is here to satisfy Closure compiler, which yells if variable GL is referenced below but GL object is not
+      // actually compiled in because application is not doing any GL operations. TODO: Ideally if GL is not being used, this function
+      // Browser.createContext() should not even be emitted.
+      if (typeof GL !== 'undefined') {
+        contextHandle = GL.createContext(canvas, contextAttributes);
+        if (contextHandle) {
+          ctx = GL.getContext(contextHandle).GLctx;
+        }
+      }
+    } else {
+      ctx = canvas.getContext('2d');
+    }
+
+    if (!ctx) return null;
+
+    if (setInModule) {
+      if (!useWebGL) assert(typeof GLctx === 'undefined', 'cannot set in module if GLctx is used, but we are a non-GL context that would replace it');
+
+      Module.ctx = ctx;
+      if (useWebGL) GL.makeContextCurrent(contextHandle);
+      Module.useWebGL = useWebGL;
+      Browser.moduleContextCreatedCallbacks.forEach(function(callback) { callback() });
+      Browser.init();
+    }
+    return ctx;
   },
 
   $funcWrappers: {},

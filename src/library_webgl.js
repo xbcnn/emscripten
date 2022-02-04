@@ -145,6 +145,143 @@ var LibraryGL = {
     return __webgl_enable_WEBGL_multi_draw(GL.contexts[ctx].GLctx);
   },
 
+  $GL_createContext__docs: '/** @param {HTMLCanvasElement} canvas */',
+  $GL_createContext: function(canvas, webGLContextAttributes) {
+#if OFFSCREEN_FRAMEBUFFER
+      // In proxied operation mode, rAF()/setTimeout() functions do not delimit frame boundaries, so can't have WebGL implementation
+      // try to detect when it's ok to discard contents of the rendered backbuffer.
+      if (webGLContextAttributes.renderViaOffscreenBackBuffer) webGLContextAttributes['preserveDrawingBuffer'] = true;
+#endif
+
+#if GL_TESTING
+      webGLContextAttributes['preserveDrawingBuffer'] = true;
+#endif
+
+#if MAX_WEBGL_VERSION >= 2 && MIN_CHROME_VERSION <= 57
+      // BUG: Workaround Chrome WebGL 2 issue: the first shipped versions of WebGL 2 in Chrome 57 did not actually implement
+      // the new garbage free WebGL 2 entry points that take an offset and a length to an existing heap (instead of having to
+      // create a completely new heap view). In Chrome the entry points only were added in to Chrome 58 and newer. For
+      // Chrome 57 (and older), disable WebGL 2 support altogether.
+      function getChromeVersion() {
+        var chromeVersion = navigator.userAgent.match(/Chrom(e|ium)\/([0-9]+)\./);
+        if (chromeVersion) return chromeVersion[2]|0;
+        // If not chrome, fall through to return undefined. (undefined <= integer will yield false)
+      }
+#endif
+
+#if GL_DEBUG
+      var errorInfo = '?';
+      function onContextCreationError(event) {
+        errorInfo = event.statusMessage || errorInfo;
+      }
+      canvas.addEventListener('webglcontextcreationerror', onContextCreationError, false);
+#endif
+
+#if GL_PREINITIALIZED_CONTEXT
+      // If WebGL context has already been preinitialized for the page on the JS side, reuse that context instead. This is useful for example when
+      // the main page precompiles shaders for the application, in which case the WebGL context is created already before any Emscripten compiled
+      // code has been downloaded.
+      if (Module['preinitializedWebGLContext']) {
+        var ctx = Module['preinitializedWebGLContext'];
+#if MAX_WEBGL_VERSION >= 2
+        webGLContextAttributes.majorVersion = (typeof WebGL2RenderingContext !== 'undefined' && ctx instanceof WebGL2RenderingContext) ? 2 : 1;
+#else
+        webGLContextAttributes.majorVersion = 1;
+#endif
+      } else {
+#endif
+
+#if MIN_SAFARI_VERSION != TARGET_NOT_SUPPORTED && GL_WORKAROUND_SAFARI_GETCONTEXT_BUG
+      // BUG: Workaround Safari WebGL issue: After successfully acquiring WebGL context on a canvas,
+      // calling .getContext() will always return that context independent of which 'webgl' or 'webgl2'
+      // context version was passed. See https://bugs.webkit.org/show_bug.cgi?id=222758 and
+      // https://github.com/emscripten-core/emscripten/issues/13295.
+      // TODO: Once the bug is fixed and shipped in Safari, adjust the Safari version field in above check.
+      if (!canvas.getContextSafariWebGL2Fixed) {
+        canvas.getContextSafariWebGL2Fixed = canvas.getContext;
+        canvas.getContext = function(ver, attrs) {
+          var gl = canvas.getContextSafariWebGL2Fixed(ver, attrs);
+          return ((ver == 'webgl') == (gl instanceof WebGLRenderingContext)) ? gl : null;
+        }
+      }
+#endif
+
+#if MIN_WEBGL_VERSION >= 2
+      var ctx = canvas.getContext("webgl2", webGLContextAttributes);
+#else
+      var ctx = 
+#if MAX_WEBGL_VERSION >= 2
+        (webGLContextAttributes.majorVersion > 1)
+        ?
+#if MIN_CHROME_VERSION <= 57
+          !(getChromeVersion() <= 57) && canvas.getContext("webgl2", webGLContextAttributes)
+#else
+          canvas.getContext("webgl2", webGLContextAttributes)
+#endif
+        :
+#endif
+        (canvas.getContext("webgl", webGLContextAttributes)
+          // https://caniuse.com/#feat=webgl
+#if MIN_IE_VERSION <= 10 || MIN_EDGE_VERSION <= 18 || MIN_FIREFOX_VERSION <= 23 || MIN_CHROME_VERSION <= 32 || MIN_SAFARI_VERSION <= 70101
+          || canvas.getContext("experimental-webgl", webGLContextAttributes)
+#endif
+          );
+#endif // MAX_WEBGL_VERSION >= 2
+
+#if GL_PREINITIALIZED_CONTEXT
+      }
+#endif
+
+#if GL_DEBUG
+      canvas.removeEventListener('webglcontextcreationerror', onContextCreationError, false);
+      if (!ctx) {
+        err('Could not create canvas: ' + [errorInfo, JSON.stringify(webGLContextAttributes)]);
+        return 0;
+      }
+#else
+      if (!ctx) return 0;
+#endif
+
+      var handle = GL.registerContext(ctx, webGLContextAttributes);
+
+#if TRACE_WEBGL_CALLS
+      GL.hookWebGL(ctx);
+#endif
+
+#if GL_DISABLE_HALF_FLOAT_EXTENSION_IF_BROKEN
+      const disableHalfFloatExtensionIfBroken = (ctx) => {
+        var t = ctx.createTexture();
+        ctx.bindTexture(0xDE1/*GL_TEXTURE_2D*/, t);
+        for (var i = 0; i < 8 && ctx.getError(); ++i) /*no-op*/;
+        var ext = ctx.getExtension('OES_texture_half_float');
+        if (!ext) return; // no half-float extension - nothing needed to fix.
+        // Bug on Safari on iOS and macOS: texImage2D() and texSubImage2D() do not allow uploading pixel data to half float textures,
+        // rendering them useless.
+        // See https://bugs.webkit.org/show_bug.cgi?id=183321, https://bugs.webkit.org/show_bug.cgi?id=169999,
+        // https://stackoverflow.com/questions/54248633/cannot-create-half-float-oes-texture-from-uint16array-on-ipad
+        ctx.texImage2D(0xDE1/*GL_TEXTURE_2D*/, 0, 0x1908/*GL_RGBA*/, 1, 1, 0, 0x1908/*GL_RGBA*/, 0x8d61/*HALF_FLOAT_OES*/, new Uint16Array(4));
+        var broken = ctx.getError();
+        ctx.bindTexture(0xDE1/*GL_TEXTURE_2D*/, null);
+        ctx.deleteTexture(t);
+        if (broken) {
+          ctx.realGetSupportedExtensions = ctx.getSupportedExtensions;
+          ctx.getSupportedExtensions = function() {
+#if GL_ASSERTIONS
+            warnOnce('Removed broken support for half-float textures. See e.g. https://bugs.webkit.org/show_bug.cgi?id=183321');
+#endif
+            // .getSupportedExtensions() can return null if context is lost, so coerce to empty array.
+            return (this.realGetSupportedExtensions() || []).filter(function(ext) {
+              return !ext.includes('texture_half_float');
+            });
+          }
+        }
+      }
+      disableHalfFloatExtensionIfBroken(ctx);
+#endif
+
+      return handle;
+    },
+
   $GL__postset: 'var GLctx;',
 #if GL_SUPPORT_AUTOMATIC_ENABLE_EXTENSIONS
   // If GL_SUPPORT_AUTOMATIC_ENABLE_EXTENSIONS is enabled, GL.initExtensions() will call to initialize these.
@@ -159,6 +296,7 @@ var LibraryGL = {
     '_webgl_enable_WEBGL_multi_draw_instanced_base_vertex_base_instance',
 #endif
     '_webgl_enable_WEBGL_multi_draw',
+    '$GL_createContext',
     ],
 #endif
   $GL: {
@@ -572,141 +710,7 @@ var LibraryGL = {
     },
 #endif
     // Returns the context handle to the new context.
-    createContext: function(canvas, webGLContextAttributes) {
-#if OFFSCREEN_FRAMEBUFFER
-      // In proxied operation mode, rAF()/setTimeout() functions do not delimit frame boundaries, so can't have WebGL implementation
-      // try to detect when it's ok to discard contents of the rendered backbuffer.
-      if (webGLContextAttributes.renderViaOffscreenBackBuffer) webGLContextAttributes['preserveDrawingBuffer'] = true;
-#endif
-
-#if GL_TESTING
-      webGLContextAttributes['preserveDrawingBuffer'] = true;
-#endif
-
-#if MAX_WEBGL_VERSION >= 2 && MIN_CHROME_VERSION <= 57
-      // BUG: Workaround Chrome WebGL 2 issue: the first shipped versions of WebGL 2 in Chrome 57 did not actually implement
-      // the new garbage free WebGL 2 entry points that take an offset and a length to an existing heap (instead of having to
-      // create a completely new heap view). In Chrome the entry points only were added in to Chrome 58 and newer. For
-      // Chrome 57 (and older), disable WebGL 2 support altogether.
-      function getChromeVersion() {
-        var chromeVersion = navigator.userAgent.match(/Chrom(e|ium)\/([0-9]+)\./);
-        if (chromeVersion) return chromeVersion[2]|0;
-        // If not chrome, fall through to return undefined. (undefined <= integer will yield false)
-      }
-#endif
-
-#if GL_DEBUG
-      var errorInfo = '?';
-      function onContextCreationError(event) {
-        errorInfo = event.statusMessage || errorInfo;
-      }
-      canvas.addEventListener('webglcontextcreationerror', onContextCreationError, false);
-#endif
-
-#if GL_PREINITIALIZED_CONTEXT
-      // If WebGL context has already been preinitialized for the page on the JS side, reuse that context instead. This is useful for example when
-      // the main page precompiles shaders for the application, in which case the WebGL context is created already before any Emscripten compiled
-      // code has been downloaded.
-      if (Module['preinitializedWebGLContext']) {
-        var ctx = Module['preinitializedWebGLContext'];
-#if MAX_WEBGL_VERSION >= 2
-        webGLContextAttributes.majorVersion = (typeof WebGL2RenderingContext !== 'undefined' && ctx instanceof WebGL2RenderingContext) ? 2 : 1;
-#else
-        webGLContextAttributes.majorVersion = 1;
-#endif
-      } else {
-#endif
-
-#if MIN_SAFARI_VERSION != TARGET_NOT_SUPPORTED && GL_WORKAROUND_SAFARI_GETCONTEXT_BUG
-      // BUG: Workaround Safari WebGL issue: After successfully acquiring WebGL context on a canvas,
-      // calling .getContext() will always return that context independent of which 'webgl' or 'webgl2'
-      // context version was passed. See https://bugs.webkit.org/show_bug.cgi?id=222758 and
-      // https://github.com/emscripten-core/emscripten/issues/13295.
-      // TODO: Once the bug is fixed and shipped in Safari, adjust the Safari version field in above check.
-      if (!canvas.getContextSafariWebGL2Fixed) {
-        canvas.getContextSafariWebGL2Fixed = canvas.getContext;
-        canvas.getContext = function(ver, attrs) {
-          var gl = canvas.getContextSafariWebGL2Fixed(ver, attrs);
-          return ((ver == 'webgl') == (gl instanceof WebGLRenderingContext)) ? gl : null;
-        }
-      }
-#endif
-
-#if MIN_WEBGL_VERSION >= 2
-      var ctx = canvas.getContext("webgl2", webGLContextAttributes);
-#else
-      var ctx = 
-#if MAX_WEBGL_VERSION >= 2
-        (webGLContextAttributes.majorVersion > 1)
-        ?
-#if MIN_CHROME_VERSION <= 57
-          !(getChromeVersion() <= 57) && canvas.getContext("webgl2", webGLContextAttributes)
-#else
-          canvas.getContext("webgl2", webGLContextAttributes)
-#endif
-        :
-#endif
-        (canvas.getContext("webgl", webGLContextAttributes)
-          // https://caniuse.com/#feat=webgl
-#if MIN_IE_VERSION <= 10 || MIN_EDGE_VERSION <= 18 || MIN_FIREFOX_VERSION <= 23 || MIN_CHROME_VERSION <= 32 || MIN_SAFARI_VERSION <= 70101
-          || canvas.getContext("experimental-webgl", webGLContextAttributes)
-#endif
-          );
-#endif // MAX_WEBGL_VERSION >= 2
-
-#if GL_PREINITIALIZED_CONTEXT
-      }
-#endif
-
-#if GL_DEBUG
-      canvas.removeEventListener('webglcontextcreationerror', onContextCreationError, false);
-      if (!ctx) {
-        err('Could not create canvas: ' + [errorInfo, JSON.stringify(webGLContextAttributes)]);
-        return 0;
-      }
-#else
-      if (!ctx) return 0;
-#endif
-
-      var handle = GL.registerContext(ctx, webGLContextAttributes);
-
-#if TRACE_WEBGL_CALLS
-      GL.hookWebGL(ctx);
-#endif
-
-#if GL_DISABLE_HALF_FLOAT_EXTENSION_IF_BROKEN
-      const disableHalfFloatExtensionIfBroken = (ctx) => {
-        var t = ctx.createTexture();
-        ctx.bindTexture(0xDE1/*GL_TEXTURE_2D*/, t);
-        for (var i = 0; i < 8 && ctx.getError(); ++i) /*no-op*/;
-        var ext = ctx.getExtension('OES_texture_half_float');
-        if (!ext) return; // no half-float extension - nothing needed to fix.
-        // Bug on Safari on iOS and macOS: texImage2D() and texSubImage2D() do not allow uploading pixel data to half float textures,
-        // rendering them useless.
-        // See https://bugs.webkit.org/show_bug.cgi?id=183321, https://bugs.webkit.org/show_bug.cgi?id=169999,
-        // https://stackoverflow.com/questions/54248633/cannot-create-half-float-oes-texture-from-uint16array-on-ipad
-        ctx.texImage2D(0xDE1/*GL_TEXTURE_2D*/, 0, 0x1908/*GL_RGBA*/, 1, 1, 0, 0x1908/*GL_RGBA*/, 0x8d61/*HALF_FLOAT_OES*/, new Uint16Array(4));
-        var broken = ctx.getError();
-        ctx.bindTexture(0xDE1/*GL_TEXTURE_2D*/, null);
-        ctx.deleteTexture(t);
-        if (broken) {
-          ctx.realGetSupportedExtensions = ctx.getSupportedExtensions;
-          ctx.getSupportedExtensions = function() {
-#if GL_ASSERTIONS
-            warnOnce('Removed broken support for half-float textures. See e.g. https://bugs.webkit.org/show_bug.cgi?id=183321');
-#endif
-            // .getSupportedExtensions() can return null if context is lost, so coerce to empty array.
-            return (this.realGetSupportedExtensions() || []).filter(function(ext) {
-              return !ext.includes('texture_half_float');
-            });
-          }
-        }
-      }
-      disableHalfFloatExtensionIfBroken(ctx);
-#endif
-
-      return handle;
-    },
+    createContext: function(canvas, webGLContextAttributes) { GL_createContext(canvas, webGLContextAttributes) },
 
 #if OFFSCREEN_FRAMEBUFFER
     enableOffscreenFramebufferAttributes: function(webGLContextAttributes) {
