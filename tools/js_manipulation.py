@@ -115,6 +115,7 @@ def make_invoke(sig, named=True):
   legal_sig = legalize_sig(sig) # TODO: do this in extcall, jscall?
   args = ['index'] + ['a' + str(i) for i in range(1, len(legal_sig))]
   ret = 'return ' if sig[0] != 'v' else ''
+  exceptional_ret = '\n    return BigInt(0);' if sig[0] == 'j' else ''
   body = '%s%s;' % (ret, make_dynCall(sig, args))
   # C++ exceptions are numbers, and longjmp is a string 'longjmp'
   if settings.SUPPORT_LONGJMP:
@@ -131,8 +132,8 @@ try {
 } catch(e) {
   stackRestore(sp);
   %s
-  _setThrew(1, 0);
+  _setThrew(1, 0);%s
 }
-}''' % (name, ','.join(args), body, rethrow)
+}''' % (name, ','.join(args), body, rethrow, exceptional_ret)
 
   return ret
